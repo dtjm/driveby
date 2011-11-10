@@ -7,11 +7,11 @@ var Crawler = function(opts) {
     // Configuration
     this.waitTime = 250;
     this.maxRedirectDepth = 10;
-    this.scraperFunction;
+    this.scraperCallback;
     this.parseDOM = true;
 
     if(opts.scraper){
-        this.scraperFunction = opts.scraper;
+        this.scraperCallback = opts.scraper;
     }
 
     // Initialize data structures
@@ -61,16 +61,16 @@ function crawl(crawler) {
 
     fetchURL(url, 0, crawler.maxRedirectDepth).on("done", function(body){
         if(!crawler.parseDOM) {
-            crawler.scraperFunction(url, body);
+            crawler.scraperCallback(url, body);
             crawlNext();
         } else {
             try {
             parseDOM(body).on("done", function(window){
-                crawler.scraperFunction(url, body, window);
+                crawler.scraperCallback(url, body, window);
                 crawlNext();
             }).on("error", function(errors){
                 console.error(errors);
-                crawler.scraperFunction(url, body);
+                crawler.scraperCallback(url, body);
                 crawlNext();
             });
             } catch (e) {
@@ -193,4 +193,4 @@ function resolveURL(baseURLString, urlString){
 }
 
 // Export constructor
-exports.Crawler = Crawler;
+module.exports = Crawler;
