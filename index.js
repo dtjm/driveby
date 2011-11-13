@@ -1,18 +1,26 @@
 var events = require("events");
 var url = require("url");
 var jsdom = require("jsdom");
+var _ = require("underscore");
+
+jsdom.defaultDocumentFeatures = {
+  FetchExternalResources   : [],
+  ProcessExternalResources : false,
+  MutationEvents           : false,
+  QuerySelector            : false
+};
 
 // Constructor
 var Crawler = function(opts) {
     // Configuration
-    this.waitTime = 250;
-    this.maxRedirectDepth = 10;
-    this.scraperFunction;
-    this.parseDOM = true;
-
-    if(opts.scraper){
-        this.scraperFunction = opts.scraper;
+    this.cfg = {
+        waitTime: 250,
+        maxRedirectDepth: 10,
+        parseDOM: true,
+        bodyFilter: null
     }
+
+    _(this.cfg).extend(opts);
 
     // Initialize data structures
     this.queue = [];
@@ -38,7 +46,7 @@ Crawler.prototype.enqueue = function(urlString){
 
     // Add url to queue
     this.queue.push(urlString);
-    console.log("+  " + urlString);
+    // console.log("+  " + urlString);
 };
 
 // HELPER FUNCTIONS
@@ -56,21 +64,25 @@ function crawl(crawler) {
         crawler.alreadyProcessed[url] = true;
         setTimeout(function(){
             crawl(crawler);
-        }, crawler.waitTime);
+        }, crawler.cfg.waitTime);
     };
 
-    fetchURL(url, 0, crawler.maxRedirectDepth).on("done", function(body){
-        if(!crawler.parseDOM) {
-            crawler.scraperFunction(url, body);
+    fetchURL(url, 0, crawler.cfg.maxRedirectDepth).on("done", function(body){
+        if(!crawler.cfg.parseDOM) {
+            crawler.cfg.callback(url, body);
             crawlNext();
         } else {
+            if(_.isFunction(crawler.cfg.bodyFilter))
+                body = crawler.cfg.bodyFilter(body);
+
             try {
             parseDOM(body).on("done", function(window){
-                crawler.scraperFunction(url, body, window);
+                crawler.cfg.callback(url, body, window);
                 crawlNext();
             }).on("error", function(errors){
+                console.error("jsdom error");
                 console.error(errors);
-                crawler.scraperFunction(url, body);
+                crawler.cfg.callback(url, body);
                 crawlNext();
             });
             } catch (e) {
@@ -171,9 +183,10 @@ function nextURL(crawler) {
 
 function parseDOM(body){
     var emitter = new events.EventEmitter;
-    jsdom.env(body, [], {}, function(errors, window){
+    try {
+    jsdom.env(body, [], null, function(errors, window){
         if(errors){
-            emitter.emit("error", errors);
+            setTimeout(function(){emitter.emit("error", errors);}, 0);
             return;
         }
 
@@ -183,6 +196,9 @@ function parseDOM(body){
         },0);
         setTimeout(function(){window.close()},0);
     });
+    } catch (e) {
+        setTimeout(function(){emitter.emit("error", e)}, 0);
+    }
     return emitter;
 }
 
@@ -193,4 +209,4 @@ function resolveURL(baseURLString, urlString){
 }
 
 // Export constructor
-exports.Crawler = Crawler;
+module.exports = Crawler;

@@ -2,6 +2,7 @@
     "name": "driveby",
     "version": "0.0.1",
     "dependencies": {
-        "jsdom": ">=0.2.9"
+        "jsdom": ">=0.2.9",
+        "underscore": "~1.2"
     }
 }
