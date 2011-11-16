@@ -1,43 +1,59 @@
-var events = require("events");
-var url = require("url");
-var jsdom = require("jsdom");
-var _ = require("underscore");
+// Load dependencies
+var
+events = require("events"),
+url    = require("url"),
+jsdom  = require("jsdom"),
+_      = require("underscore")
 
-jsdom.defaultDocumentFeatures = {
-  FetchExternalResources   : [],
-  ProcessExternalResources : false,
-  MutationEvents           : false,
-  QuerySelector            : false
-};
-
-// Constructor
+// Crawler constructor
+// -------------------
 var Crawler = function(opts) {
-    // Configuration
+
+    // Set default configuration
     this.cfg = {
-        waitTime: 250,
+        // Number of millisecond to wait before fetching next URL
+        waitTime: 0,
+        // Max number of redirects to follow before quitting
         maxRedirectDepth: 10,
+        // Whether to parse the HTML into a DOM document
         parseDOM: true,
-        bodyFilter: null
-    }
+        // A function to pre-filter the body before parsing the DOM
+        bodyFilter: null,
+        // Callback to act on the fetched document
+        callback: null,
+        // Extra output
+        verbose: false
+    };
 
-    _(this.cfg).extend(opts);
+    // Apply the passed-in arguments over the defaults
+    _.extend(this.cfg, opts);
 
-    // Initialize data structures
+    // Initialize member data structures
+    // ---------------------------------
+
+    // List of urls to process
     this.queue = [];
+    // List of URLs already processed
     this.alreadyProcessed = {};
+    // List of URLs currently in the queue
     this.alreadyQueued = {};
+    // Current URL being processed
     this.currentURL;
 };
 
+// Starts the crawl process. The crawler will fetch one URL at a time.
 Crawler.prototype.start = function(){
     crawl(this);
 };
 
+// Add an item to the queue
 Crawler.prototype.enqueue = function(urlString){
+    // Resolve relative URLs against the current URL
     if(this.currentURL) {
         urlString = resolveURL(this.currentURL, urlString);
     }
 
+    // Skip duplicate entries
     if(this.alreadyProcessed[urlString]) return;
     if(this.alreadyQueued[urlString]) return;
 
@@ -46,7 +62,7 @@ Crawler.prototype.enqueue = function(urlString){
 
     // Add url to queue
     this.queue.push(urlString);
-    // console.log("+  " + urlString);
+    if(this.cfg.verbose) console.log(" +  " + urlString);
 };
 
 // HELPER FUNCTIONS
@@ -63,54 +79,77 @@ function crawl(crawler) {
     var crawlNext = function(){
         crawler.alreadyProcessed[url] = true;
         setTimeout(function(){
+            if(crawler.cfg.verbose)
+                console.log("" + crawler.queue.length + " URLs remaining");
+
             crawl(crawler);
         }, crawler.cfg.waitTime);
     };
 
-    fetchURL(url, 0, crawler.cfg.maxRedirectDepth).on("done", function(body){
-        if(!crawler.cfg.parseDOM) {
-            crawler.cfg.callback(url, body);
-            crawlNext();
-        } else {
-            if(_.isFunction(crawler.cfg.bodyFilter))
-                body = crawler.cfg.bodyFilter(body);
-
-            try {
-            parseDOM(body).on("done", function(window){
-                crawler.cfg.callback(url, body, window);
-                crawlNext();
-            }).on("error", function(errors){
-                console.error("jsdom error");
-                console.error(errors);
+    var fetch = function(){
+        fetchURL(url, 0, crawler.cfg.maxRedirectDepth).on("done", function(body){
+            if(!crawler.cfg.parseDOM) {
                 crawler.cfg.callback(url, body);
                 crawlNext();
-            });
-            } catch (e) {
-                console.error("Error parsing HTML:");
-                console.error(e);
-                crawlNext();
+            } else {
+                if(_.isFunction(crawler.cfg.bodyFilter))
+                    body = crawler.cfg.bodyFilter(body);
+
+                try {
+                    parseDOM(body).on("done", function(window){
+                        crawler.cfg.callback(url, body, window);
+                        crawlNext();
+                    }).on("error", function(errors){
+                        console.error("[driveby] parseDOM error".red);
+                        console.error(errors);
+                        crawlNext();
+                    });
+                } catch (e) {
+                    console.error("[driveby] Error parsing HTML".red);
+                    console.error(e);
+                    crawlNext();
+                }
             }
-        }
-    }).on("error", function(err){
-        console.log(err);
-        crawlNext();
-    });
+        }).on("error", function(err){
+            console.error("[driveby] fetchURL error".red);
+            console.error(err);
+            crawlNext();
+        });
+    };
+
+    // If the prefetch filter doesn't exist, or if it emits a "yes", then go
+    // ahead with the fetch
+    if(!crawler.prefetchFilter){
+        fetch();
+    }
+    if(_(crawler.prefetchFilter).isFunction()){
+        crawler.prefetchFilter(url)
+               .on("yes", fetch)
+               .on("no", crawlNext);
+    }
 };
 
 function fetchURL(urlString, redirectDepth, maxRedirectDepth){
     var emitter = new events.EventEmitter;
 
     var urlObj = url.parse(urlString);
-    console.log("=> " + urlString);
+
+    // Display URL in output
+    if(redirectDepth === 0) 
+        console.log("=> " + urlString);
+    else
+        console.log(" R " + urlString);
+
     var www = getWWWClient(urlObj.protocol);
 
+    // Couldn't get a proper http/https client
     if(!www){
-        setTimeout(function(){emitter.emit("error",
-                                           "invalid URL " + urlString)},
-                                           0);
+        setTimeout(function(){
+            emitter.emit("error", "invalid URL " + urlString)
+        },0);
+
         return emitter;
     }
-
 
     var options = {
         host: urlObj.hostname,
@@ -128,20 +167,20 @@ function fetchURL(urlString, redirectDepth, maxRedirectDepth){
     www.get(options, function(res){
         switch(res.statusCode){
             case 301:
-            case 302:
-            case 303:
+                case 302:
+                case 303:
                 if(redirectDepth === maxRedirectDepth) {
-                    emitter.emit("error", "Redirect depth exceeded");
-                }
-                var redirectURL = resolveURL(urlString, res.headers.location);
-                var nestedEmitter = fetchURL(redirectURL,
-                                redirectDepth+1,
-                                maxRedirectDepth);
-                nestedEmitter.on("done", function(bodyString){
-                    emitter.emit("done", bodyString);
-                });
-                return;
-                break;
+                emitter.emit("error", "Redirect depth exceeded");
+            }
+            var redirectURL = resolveURL(urlString, res.headers.location);
+            var nestedEmitter = fetchURL(redirectURL,
+                                         redirectDepth+1,
+                                         maxRedirectDepth);
+                                         nestedEmitter.on("done", function(bodyString){
+                                             emitter.emit("done", bodyString);
+                                         });
+                                         return;
+                                         break;
         }
 
         var body = [];
@@ -202,6 +241,9 @@ function parseDOM(body){
     return emitter;
 }
 
+/**
+ * @private
+ */
 function resolveURL(baseURLString, urlString){
     var urlObj = url.parse(urlString);
     var baseURLObj = url.parse(baseURLString);
